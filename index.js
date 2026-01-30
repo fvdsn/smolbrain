@@ -86,6 +86,10 @@ function setTaskStatus(id, newTag) {
   console.log(`Task ${id} is now [${newTag}]`);
 }
 
+function formatMemory(db, row) {
+  return { id: row.id, timestamp: row.timestamp, content: row.content, tags: getTagsForMemory(db, row.id) };
+}
+
 function printMemory(row, tags) {
   const tagSuffix = tags && tags.length > 0 ? ` [${tags.join(", ")}]` : "";
   console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${row.content}`);
@@ -140,21 +144,25 @@ function applyFilters(query, { from, to, tags, tagAlias = "mt" } = {}) {
   }
 }
 
-function list({ from, to, tags, limit, tail, offset } = {}) {
+function list({ from, to, tags, limit, tail, offset, json } = {}) {
   const db = getDb();
   const query = { joins: [], wheres: ["1=1"], params: [] };
   applyFilters(query, { from, to, tags });
 
   const rows = queryMemories(db, { ...query, limit, tail, offset });
 
-  for (const row of rows) {
-    const memoryTags = getTagsForMemory(db, row.id);
-    printMemory(row, memoryTags);
+  if (json) {
+    console.log(JSON.stringify(rows.map((row) => formatMemory(db, row))));
+  } else {
+    for (const row of rows) {
+      const memoryTags = getTagsForMemory(db, row.id);
+      printMemory(row, memoryTags);
+    }
   }
   db.close();
 }
 
-function getById(id) {
+function getById(id, { json } = {}) {
   const db = getDb();
   const row = db
     .prepare("SELECT id, timestamp, content FROM memories WHERE id = ?")
@@ -165,17 +173,27 @@ function getById(id) {
     console.log(`No memory found with id ${id}.`);
     return;
   }
-  const tags = getTagsForMemory(db, row.id);
+  if (json) {
+    console.log(JSON.stringify(formatMemory(db, row)));
+  } else {
+    const tags = getTagsForMemory(db, row.id);
+    printMemory(row, tags);
+  }
   db.close();
-  printMemory(row, tags);
 }
 
-function search(text, { from, to, tags, limit, tail, offset } = {}) {
+function search(text, { from, to, tags, limit, tail, offset, json } = {}) {
   const db = getDb();
   const query = { joins: [], wheres: ["m.content LIKE ?"], params: [`%${text}%`] };
   applyFilters(query, { from, to, tags });
 
   const rows = queryMemories(db, { ...query, limit, tail, offset });
+
+  if (json) {
+    console.log(JSON.stringify(rows.map((row) => formatMemory(db, row))));
+    db.close();
+    return;
+  }
 
   const needle = text.toLowerCase();
 
@@ -222,10 +240,15 @@ program
   .command("store [text...]")
   .description("Store a memory (pass text as args or pipe via stdin)")
   .option("-t, --tag <tag>", "Tag(s) to attach to the memory (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
+  .option("--json", "Output as JSON")
   .action((textParts, options) => {
     function storeAndPrint(text) {
       const { row, tags } = store(text, options.tag.length > 0 ? options.tag : undefined);
-      printMemoryPreview(row, tags);
+      if (options.json) {
+        console.log(JSON.stringify({ id: row.id, timestamp: row.timestamp, content: row.content, tags }));
+      } else {
+        printMemoryPreview(row, tags);
+      }
     }
     if (textParts.length > 0) {
       storeAndPrint(textParts.join(" "));
@@ -253,6 +276,7 @@ program
   .option("--limit <n>", "Show first N results (oldest first)", Number)
   .option("--tail <n>", "Show last N results (chronological order)", Number)
   .option("--offset <n>", "Skip first N results", Number)
+  .option("--json", "Output as JSON")
   .action((options) => {
     if (options.limit && options.tail) {
       console.error("Error: --limit and --tail are mutually exclusive.");
@@ -265,14 +289,16 @@ program
       limit: options.limit,
       tail: options.tail,
       offset: options.offset,
+      json: options.json,
     });
   });
 
 program
   .command("get <id>")
   .description("Retrieve a single memory by its ID")
-  .action((id) => {
-    getById(Number(id));
+  .option("--json", "Output as JSON")
+  .action((id, options) => {
+    getById(Number(id), { json: options.json });
   });
 
 program
@@ -284,6 +310,7 @@ program
   .option("--limit <n>", "Show first N results (oldest first)", Number)
   .option("--tail <n>", "Show last N results (chronological order)", Number)
   .option("--offset <n>", "Skip first N results", Number)
+  .option("--json", "Output as JSON")
   .action((text, options) => {
     if (options.limit && options.tail) {
       console.error("Error: --limit and --tail are mutually exclusive.");
@@ -296,6 +323,7 @@ program
       limit: options.limit,
       tail: options.tail,
       offset: options.offset,
+      json: options.json,
     });
   });
 
@@ -303,11 +331,16 @@ program
   .command("store-task [text...]")
   .description("Store a task (automatically tagged with 'task' and 'todo')")
   .option("-t, --tag <tag>", "Additional tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
+  .option("--json", "Output as JSON")
   .action((textParts, options) => {
     const tags = ["task", "todo", ...options.tag];
     function storeAndPrint(text) {
       const { row, tags: allTags } = store(text, tags);
-      printMemoryPreview(row, allTags);
+      if (options.json) {
+        console.log(JSON.stringify({ id: row.id, timestamp: row.timestamp, content: row.content, tags: allTags }));
+      } else {
+        printMemoryPreview(row, allTags);
+      }
     }
     if (textParts.length > 0) {
       storeAndPrint(textParts.join(" "));
@@ -335,6 +368,7 @@ program
   .option("--limit <n>", "Show first N results (oldest first)", Number)
   .option("--tail <n>", "Show last N results (chronological order)", Number)
   .option("--offset <n>", "Skip first N results", Number)
+  .option("--json", "Output as JSON")
   .action((status, options) => {
     if (options.limit && options.tail) {
       console.error("Error: --limit and --tail are mutually exclusive.");
@@ -363,9 +397,13 @@ program
 
     const rows = queryMemories(db, { ...query, limit: options.limit, tail: options.tail, offset: options.offset });
 
-    for (const row of rows) {
-      const memoryTags = getTagsForMemory(db, row.id);
-      printMemory(row, memoryTags);
+    if (options.json) {
+      console.log(JSON.stringify(rows.map((row) => formatMemory(db, row))));
+    } else {
+      for (const row of rows) {
+        const memoryTags = getTagsForMemory(db, row.id);
+        printMemory(row, memoryTags);
+      }
     }
     db.close();
   });
