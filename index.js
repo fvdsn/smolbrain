@@ -246,7 +246,7 @@ function search(text, { from, to, tags, limit, tail, offset, json } = {}) {
 program.name("smolbrain").description("Long-term memory for AI agents");
 
 program
-  .command("store [text...]")
+  .command("add [text...]")
   .description("Store a memory (pass text as args or pipe via stdin)")
   .option("-t, --tag <tag>", "Tag(s) to attach to the memory (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .option("--json", "Output as JSON")
@@ -277,7 +277,7 @@ program
   });
 
 program
-  .command("list")
+  .command("ls")
   .description("List memories, optionally filtered by date range, tags, limit")
   .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .option("--from <date>", "Start date (inclusive)")
@@ -311,8 +311,8 @@ program
   });
 
 program
-  .command("search <text>")
-  .description("Search memories by content (case insensitive)")
+  .command("find <text>")
+  .description("Search memories by content")
   .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .option("--from <date>", "Start date (inclusive)")
   .option("--to <date>", "End date (inclusive)")
@@ -337,7 +337,7 @@ program
   });
 
 program
-  .command("store-task [text...]")
+  .command("task [text...]")
   .description("Store a task (automatically tagged with 'task' and 'todo')")
   .option("-t, --tag <tag>", "Additional tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .option("--json", "Output as JSON")
@@ -369,7 +369,7 @@ program
   });
 
 program
-  .command("list-tasks [status]")
+  .command("tasks [status]")
   .description("List tasks (default: todo and wip). Status: todo, wip, done")
   .option("-t, --tag <tag>", "Additional tag(s) to filter by (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .option("--from <date>", "Start date (inclusive)")
@@ -418,7 +418,7 @@ program
   });
 
 program
-  .command("mark-task <id> <status>")
+  .command("mark <id> <status>")
   .description("Set task status: todo, wip, or done")
   .action((id, status) => {
     const validStatuses = ["todo", "wip", "done"];
