@@ -439,6 +439,53 @@ program
   });
 
 program
+  .command("edit <id> [text...]")
+  .description("Replace a memory's content (archives the original)")
+  .option("--json", "Output as JSON")
+  .action((id, textParts, options) => {
+    function editAndPrint(newText) {
+      const db = getDb();
+      const old = db.prepare("SELECT id, timestamp, content FROM memories WHERE id = ?").get(Number(id));
+      if (!old) {
+        db.close();
+        console.log(`No memory found with id ${id}.`);
+        return;
+      }
+      const oldTags = getTagsForMemory(db, old.id).filter((t) => t !== "archived");
+      db.prepare("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, 'archived')").run(old.id);
+      const { lastInsertRowid } = db.prepare("INSERT INTO memories (content) VALUES (?)").run(newText);
+      const insertTag = db.prepare("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)");
+      for (const tag of oldTags) {
+        insertTag.run(lastInsertRowid, tag);
+      }
+      const row = db.prepare("SELECT id, timestamp, content FROM memories WHERE id = ?").get(lastInsertRowid);
+      const newTags = getTagsForMemory(db, lastInsertRowid);
+      db.close();
+      if (options.json) {
+        console.log(JSON.stringify({ id: row.id, timestamp: row.timestamp, content: row.content, tags: newTags }));
+      } else {
+        console.log(`Memory ${old.id} archived. New memory stored as ${row.id}.`);
+        printMemoryPreview(row, newTags);
+      }
+    }
+    if (textParts.length > 0) {
+      editAndPrint(textParts.join(" "));
+    } else {
+      let data = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => (data += chunk));
+      process.stdin.on("end", () => {
+        const text = data.trim();
+        if (!text) {
+          console.error("No input provided.");
+          process.exit(1);
+        }
+        editAndPrint(text);
+      });
+    }
+  });
+
+program
   .command("rm <id>")
   .description("Soft-delete a memory (tag as archived)")
   .action((id) => {
