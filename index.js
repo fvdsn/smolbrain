@@ -32,7 +32,7 @@ function store(text) {
 }
 
 function printMemory(row) {
-  console.log(`[${row.id}] [${row.timestamp}] ${row.content}`);
+  console.log(`[${row.id}] [${row.timestamp}]\n${row.content}`);
 }
 
 function remember(from, to) {
@@ -72,8 +72,39 @@ function search(text) {
     .all(`%${text}%`);
   db.close();
 
+  const needle = text.toLowerCase();
+
   for (const row of rows) {
-    printMemory(row);
+    const lines = row.content.split("\n");
+    const matchIndices = new Set();
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].toLowerCase().includes(needle)) {
+        for (let j = Math.max(0, i - 1); j <= Math.min(lines.length - 1, i + 2); j++) {
+          matchIndices.add(j);
+        }
+      }
+    }
+
+    const sorted = [...matchIndices].sort((a, b) => a - b);
+    const parts = [];
+    let group = [];
+
+    for (const idx of sorted) {
+      if (group.length > 0 && idx !== group[group.length - 1] + 1) {
+        parts.push(group.map((i) => lines[i]).join("\n"));
+        group = [];
+      }
+      group.push(idx);
+    }
+    if (group.length > 0) {
+      parts.push(group.map((i) => lines[i]).join("\n"));
+    }
+
+    console.log(`[${row.id}] [${row.timestamp}]`);
+    const prefix = sorted[0] > 0 ? "...\n" : "";
+    const suffix = sorted[sorted.length - 1] < lines.length - 1 ? "\n..." : "";
+    console.log(prefix + parts.join("\n...\n") + suffix);
   }
 }
 
