@@ -136,11 +136,14 @@ function queryMemories(db, { joins = [], wheres = ["1=1"], params = [], limit, o
   return rows;
 }
 
-function applyFilters(query, { from, to, tags, tagAlias = "mt" } = {}) {
+function applyFilters(query, { from, to, tags, all, tagAlias = "mt" } = {}) {
   if (tags && tags.length > 0) {
     query.joins.push(`JOIN memory_tags ${tagAlias} ON m.id = ${tagAlias}.memory_id`);
     query.wheres.push(`${tagAlias}.tag IN (${tags.map(() => "?").join(", ")})`);
     query.params.push(...tags);
+  }
+  if (!all) {
+    query.wheres.push("m.id NOT IN (SELECT memory_id FROM memory_tags WHERE tag = 'archived')");
   }
   if (from) {
     query.wheres.push("m.timestamp >= ?");
@@ -152,10 +155,10 @@ function applyFilters(query, { from, to, tags, tagAlias = "mt" } = {}) {
   }
 }
 
-function list({ from, to, tags, limit, tail, offset, json } = {}) {
+function list({ from, to, tags, all, limit, tail, offset, json } = {}) {
   const db = getDb();
   const query = { joins: [], wheres: ["1=1"], params: [] };
-  applyFilters(query, { from, to, tags });
+  applyFilters(query, { from, to, tags, all });
 
   const rows = queryMemories(db, { ...query, limit, tail, offset });
 
@@ -190,11 +193,11 @@ function getById(id, { json } = {}) {
   db.close();
 }
 
-function search(text, { from, to, tags, limit, tail, offset, json } = {}) {
+function search(text, { from, to, tags, all, limit, tail, offset, json } = {}) {
   const db = getDb();
   const ftsQuery = text.split(/\s+/).filter(Boolean).map((t) => `"${t.replace(/"/g, '""')}"`).join(" ");
   const query = { joins: ["JOIN memories_fts ON m.id = memories_fts.rowid"], wheres: ["memories_fts MATCH ?"], params: [ftsQuery] };
-  applyFilters(query, { from, to, tags });
+  applyFilters(query, { from, to, tags, all });
 
   const rows = queryMemories(db, { ...query, limit, tail, offset });
 
@@ -285,6 +288,7 @@ program
   .option("--limit <n>", "Show first N results (oldest first)", Number)
   .option("--tail <n>", "Show last N results (chronological order)", Number)
   .option("--offset <n>", "Skip first N results", Number)
+  .option("-a, --all", "Include archived memories")
   .option("--json", "Output as JSON")
   .action((options) => {
     if (options.limit && options.tail) {
@@ -295,6 +299,7 @@ program
       from: options.from,
       to: options.to,
       tags: options.tag.length > 0 ? options.tag : undefined,
+      all: options.all,
       limit: options.limit,
       tail: options.tail,
       offset: options.offset,
@@ -319,6 +324,7 @@ program
   .option("--limit <n>", "Show first N results (oldest first)", Number)
   .option("--tail <n>", "Show last N results (chronological order)", Number)
   .option("--offset <n>", "Skip first N results", Number)
+  .option("-a, --all", "Include archived memories")
   .option("--json", "Output as JSON")
   .action((text, options) => {
     if (options.limit && options.tail) {
@@ -329,6 +335,7 @@ program
       from: options.from,
       to: options.to,
       tags: options.tag.length > 0 ? options.tag : undefined,
+      all: options.all,
       limit: options.limit,
       tail: options.tail,
       offset: options.offset,
@@ -377,6 +384,7 @@ program
   .option("--limit <n>", "Show first N results (oldest first)", Number)
   .option("--tail <n>", "Show last N results (chronological order)", Number)
   .option("--offset <n>", "Skip first N results", Number)
+  .option("-a, --all", "Include archived tasks")
   .option("--json", "Output as JSON")
   .action((status, options) => {
     if (options.limit && options.tail) {
@@ -401,6 +409,7 @@ program
       from: options.from,
       to: options.to,
       tags: options.tag.length > 0 ? options.tag : undefined,
+      all: options.all,
       tagAlias: "mt2",
     });
 
@@ -427,6 +436,50 @@ program
       process.exit(1);
     }
     setTaskStatus(Number(id), status);
+  });
+
+program
+  .command("rm <id>")
+  .description("Soft-delete a memory (tag as archived)")
+  .action((id) => {
+    const db = getDb();
+    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
+    if (!row) {
+      db.close();
+      console.log(`No memory found with id ${id}.`);
+      return;
+    }
+    const tags = getTagsForMemory(db, row.id);
+    if (tags.includes("archived")) {
+      db.close();
+      console.log(`Memory ${id} is already archived.`);
+      return;
+    }
+    db.prepare("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, 'archived')").run(row.id);
+    db.close();
+    console.log(`Memory ${id} archived.`);
+  });
+
+program
+  .command("restore <id>")
+  .description("Restore an archived memory")
+  .action((id) => {
+    const db = getDb();
+    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
+    if (!row) {
+      db.close();
+      console.log(`No memory found with id ${id}.`);
+      return;
+    }
+    const tags = getTagsForMemory(db, row.id);
+    if (!tags.includes("archived")) {
+      db.close();
+      console.log(`Memory ${id} is not archived.`);
+      return;
+    }
+    db.prepare("DELETE FROM memory_tags WHERE memory_id = ? AND tag = 'archived'").run(row.id);
+    db.close();
+    console.log(`Memory ${id} restored.`);
   });
 
 program.parse();
