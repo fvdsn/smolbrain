@@ -486,6 +486,46 @@ program
   });
 
 program
+  .command("tag <id> <tag>")
+  .description("Add a tag to a memory")
+  .action((id, tag) => {
+    const db = getDb();
+    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
+    if (!row) {
+      db.close();
+      console.log(`No memory found with id ${id}.`);
+      return;
+    }
+    db.prepare("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)").run(row.id, tag);
+    const tags = getTagsForMemory(db, row.id);
+    db.close();
+    console.log(`Memory ${id} [${tags.join(", ")}]`);
+  });
+
+program
+  .command("untag <id> <tag>")
+  .description("Remove a tag from a memory")
+  .action((id, tag) => {
+    const db = getDb();
+    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
+    if (!row) {
+      db.close();
+      console.log(`No memory found with id ${id}.`);
+      return;
+    }
+    const changes = db.prepare("DELETE FROM memory_tags WHERE memory_id = ? AND tag = ?").run(row.id, tag).changes;
+    if (changes === 0) {
+      db.close();
+      console.log(`Memory ${id} does not have tag "${tag}".`);
+      return;
+    }
+    const tags = getTagsForMemory(db, row.id);
+    db.close();
+    const tagStr = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
+    console.log(`Memory ${id}${tagStr}`);
+  });
+
+program
   .command("rm <id>")
   .description("Soft-delete a memory (tag as archived)")
   .action((id) => {
