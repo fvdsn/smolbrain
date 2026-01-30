@@ -99,26 +99,39 @@ function printMemoryPreview(row, tags) {
   console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${preview}${ellipsis}`);
 }
 
-function remember(from, to, tags) {
+function list({ from, to, tags, limit, tail } = {}) {
   const db = getDb();
-  let rows;
+  const params = [];
+  const joins = [];
+  const wheres = ["1=1"];
+
   if (tags && tags.length > 0) {
-    const placeholders = tags.map(() => "?").join(", ");
-    rows = db
-      .prepare(
-        `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
-         JOIN memory_tags mt ON m.id = mt.memory_id
-         WHERE m.timestamp >= ? AND m.timestamp <= ? AND mt.tag IN (${placeholders})
-         ORDER BY m.timestamp`
-      )
-      .all(from, to, ...tags);
-  } else {
-    rows = db
-      .prepare(
-        "SELECT id, timestamp, content FROM memories WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp"
-      )
-      .all(from, to);
+    joins.push("JOIN memory_tags mt ON m.id = mt.memory_id");
+    wheres.push(`mt.tag IN (${tags.map(() => "?").join(", ")})`);
+    params.push(...tags);
   }
+  if (from) {
+    wheres.push("m.timestamp >= ?");
+    params.push(from);
+  }
+  if (to) {
+    wheres.push("m.timestamp <= ?");
+    params.push(to);
+  }
+
+  const order = tail ? "DESC" : "ASC";
+  const limitClause = limit || tail ? "LIMIT ?" : "";
+  if (limit) params.push(limit);
+  if (tail) params.push(tail);
+
+  const sql = `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
+    ${joins.join(" ")}
+    WHERE ${wheres.join(" AND ")}
+    ORDER BY m.timestamp ${order}
+    ${limitClause}`;
+
+  let rows = db.prepare(sql).all(...params);
+  if (tail) rows.reverse();
 
   for (const row of rows) {
     const memoryTags = getTagsForMemory(db, row.id);
@@ -143,26 +156,40 @@ function rememberById(id) {
   printMemory(row, tags);
 }
 
-function search(text, tags) {
+function search(text, { from, to, tags, limit, tail } = {}) {
   const db = getDb();
-  let rows;
+  const params = [];
+  const joins = [];
+  const wheres = ["m.content LIKE ?"];
+  params.push(`%${text}%`);
+
   if (tags && tags.length > 0) {
-    const placeholders = tags.map(() => "?").join(", ");
-    rows = db
-      .prepare(
-        `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
-         JOIN memory_tags mt ON m.id = mt.memory_id
-         WHERE m.content LIKE ? AND mt.tag IN (${placeholders})
-         ORDER BY m.timestamp`
-      )
-      .all(`%${text}%`, ...tags);
-  } else {
-    rows = db
-      .prepare(
-        "SELECT id, timestamp, content FROM memories WHERE content LIKE ? ORDER BY timestamp"
-      )
-      .all(`%${text}%`);
+    joins.push("JOIN memory_tags mt ON m.id = mt.memory_id");
+    wheres.push(`mt.tag IN (${tags.map(() => "?").join(", ")})`);
+    params.push(...tags);
   }
+  if (from) {
+    wheres.push("m.timestamp >= ?");
+    params.push(from);
+  }
+  if (to) {
+    wheres.push("m.timestamp <= ?");
+    params.push(to);
+  }
+
+  const order = tail ? "DESC" : "ASC";
+  const limitClause = limit || tail ? "LIMIT ?" : "";
+  if (limit) params.push(limit);
+  if (tail) params.push(tail);
+
+  const sql = `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
+    ${joins.join(" ")}
+    WHERE ${wheres.join(" AND ")}
+    ORDER BY m.timestamp ${order}
+    ${limitClause}`;
+
+  let rows = db.prepare(sql).all(...params);
+  if (tail) rows.reverse();
 
   const needle = text.toLowerCase();
 
@@ -232,15 +259,29 @@ program
   });
 
 program
-  .command("remember <from> <to>")
-  .description("List memories between two ISO timestamps")
+  .command("list")
+  .description("List memories, optionally filtered by date range, tags, limit")
   .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
-  .action((from, to, options) => {
-    remember(from, to, options.tag.length > 0 ? options.tag : undefined);
+  .option("--from <date>", "Start date (inclusive)")
+  .option("--to <date>", "End date (inclusive)")
+  .option("--limit <n>", "Show first N results (oldest first)", Number)
+  .option("--tail <n>", "Show last N results (chronological order)", Number)
+  .action((options) => {
+    if (options.limit && options.tail) {
+      console.error("Error: --limit and --tail are mutually exclusive.");
+      process.exit(1);
+    }
+    list({
+      from: options.from,
+      to: options.to,
+      tags: options.tag.length > 0 ? options.tag : undefined,
+      limit: options.limit,
+      tail: options.tail,
+    });
   });
 
 program
-  .command("remember-by-id <id>")
+  .command("get <id>")
   .description("Retrieve a single memory by its ID")
   .action((id) => {
     rememberById(Number(id));
@@ -250,8 +291,22 @@ program
   .command("search <text>")
   .description("Search memories by content (case insensitive)")
   .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
+  .option("--from <date>", "Start date (inclusive)")
+  .option("--to <date>", "End date (inclusive)")
+  .option("--limit <n>", "Show first N results (oldest first)", Number)
+  .option("--tail <n>", "Show last N results (chronological order)", Number)
   .action((text, options) => {
-    search(text, options.tag.length > 0 ? options.tag : undefined);
+    if (options.limit && options.tail) {
+      console.error("Error: --limit and --tail are mutually exclusive.");
+      process.exit(1);
+    }
+    search(text, {
+      from: options.from,
+      to: options.to,
+      tags: options.tag.length > 0 ? options.tag : undefined,
+      limit: options.limit,
+      tail: options.tail,
+    });
   });
 
 program
@@ -285,7 +340,15 @@ program
   .command("list-tasks [status]")
   .description("List tasks (default: todo and wip). Status: todo, wip, done")
   .option("-t, --tag <tag>", "Additional tag(s) to filter by (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
+  .option("--from <date>", "Start date (inclusive)")
+  .option("--to <date>", "End date (inclusive)")
+  .option("--limit <n>", "Show first N results (oldest first)", Number)
+  .option("--tail <n>", "Show last N results (chronological order)", Number)
   .action((status, options) => {
+    if (options.limit && options.tail) {
+      console.error("Error: --limit and --tail are mutually exclusive.");
+      process.exit(1);
+    }
     const validStatuses = ["todo", "wip", "done"];
     const statuses = status
       ? [status]
@@ -295,30 +358,39 @@ program
       process.exit(1);
     }
     const db = getDb();
-    const statusPlaceholders = statuses.map(() => "?").join(", ");
-    const extraFilter = options.tag.length > 0;
-    let rows;
-    if (extraFilter) {
-      const tagPlaceholders = options.tag.map(() => "?").join(", ");
-      rows = db
-        .prepare(
-          `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
-           JOIN memory_tags mt1 ON m.id = mt1.memory_id
-           JOIN memory_tags mt2 ON m.id = mt2.memory_id
-           WHERE mt1.tag IN (${statusPlaceholders}) AND mt2.tag IN (${tagPlaceholders})
-           ORDER BY m.timestamp`
-        )
-        .all(...statuses, ...options.tag);
-    } else {
-      rows = db
-        .prepare(
-          `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
-           JOIN memory_tags mt ON m.id = mt.memory_id
-           WHERE mt.tag IN (${statusPlaceholders})
-           ORDER BY m.timestamp`
-        )
-        .all(...statuses);
+    const params = [];
+    const joins = ["JOIN memory_tags mt1 ON m.id = mt1.memory_id"];
+    const wheres = [`mt1.tag IN (${statuses.map(() => "?").join(", ")})`];
+    params.push(...statuses);
+
+    if (options.tag.length > 0) {
+      joins.push("JOIN memory_tags mt2 ON m.id = mt2.memory_id");
+      wheres.push(`mt2.tag IN (${options.tag.map(() => "?").join(", ")})`);
+      params.push(...options.tag);
     }
+    if (options.from) {
+      wheres.push("m.timestamp >= ?");
+      params.push(options.from);
+    }
+    if (options.to) {
+      wheres.push("m.timestamp <= ?");
+      params.push(options.to);
+    }
+
+    const order = options.tail ? "DESC" : "ASC";
+    const limitClause = options.limit || options.tail ? "LIMIT ?" : "";
+    if (options.limit) params.push(options.limit);
+    if (options.tail) params.push(options.tail);
+
+    const sql = `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
+      ${joins.join(" ")}
+      WHERE ${wheres.join(" AND ")}
+      ORDER BY m.timestamp ${order}
+      ${limitClause}`;
+
+    let rows = db.prepare(sql).all(...params);
+    if (options.tail) rows.reverse();
+
     for (const row of rows) {
       const memoryTags = getTagsForMemory(db, row.id);
       printMemory(row, memoryTags);
