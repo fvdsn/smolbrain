@@ -29,6 +29,14 @@ function getDb() {
       PRIMARY KEY (memory_id, tag)
     )
   `);
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, content=memories, content_rowid=id);
+
+    CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+      INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+  `);
+  db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`);
   return db;
 }
 
@@ -184,7 +192,8 @@ function getById(id, { json } = {}) {
 
 function search(text, { from, to, tags, limit, tail, offset, json } = {}) {
   const db = getDb();
-  const query = { joins: [], wheres: ["m.content LIKE ?"], params: [`%${text}%`] };
+  const ftsQuery = text.split(/\s+/).filter(Boolean).map((t) => `"${t.replace(/"/g, '""')}"`).join(" ");
+  const query = { joins: ["JOIN memories_fts ON m.id = memories_fts.rowid"], wheres: ["memories_fts MATCH ?"], params: [ftsQuery] };
   applyFilters(query, { from, to, tags });
 
   const rows = queryMemories(db, { ...query, limit, tail, offset });
