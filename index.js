@@ -45,7 +45,12 @@ function store(text, tags) {
       insert.run(lastInsertRowid, tag);
     }
   }
+  const row = db
+    .prepare("SELECT id, timestamp, content FROM memories WHERE id = ?")
+    .get(lastInsertRowid);
+  const allTags = getTagsForMemory(db, lastInsertRowid);
   db.close();
+  return { row, tags: allTags };
 }
 
 function getTagsForMemory(db, memoryId) {
@@ -84,6 +89,14 @@ function setTaskStatus(id, newTag) {
 function printMemory(row, tags) {
   const tagSuffix = tags && tags.length > 0 ? ` [${tags.join(", ")}]` : "";
   console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${row.content}`);
+}
+
+function printMemoryPreview(row, tags) {
+  const tagSuffix = tags && tags.length > 0 ? ` [${tags.join(", ")}]` : "";
+  const lines = row.content.split("\n");
+  const preview = lines.slice(0, 3).join("\n");
+  const ellipsis = lines.length > 3 ? "\n..." : "";
+  console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${preview}${ellipsis}`);
 }
 
 function remember(from, to, tags) {
@@ -197,8 +210,12 @@ program
   .description("Store a memory (pass text as args or pipe via stdin)")
   .option("-t, --tag <tag>", "Tag(s) to attach to the memory (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .action((textParts, options) => {
+    function storeAndPrint(text) {
+      const { row, tags } = store(text, options.tag.length > 0 ? options.tag : undefined);
+      printMemoryPreview(row, tags);
+    }
     if (textParts.length > 0) {
-      store(textParts.join(" "), options.tag);
+      storeAndPrint(textParts.join(" "));
     } else {
       let data = "";
       process.stdin.setEncoding("utf8");
@@ -209,7 +226,7 @@ program
           console.error("No input provided.");
           process.exit(1);
         }
-        store(text, options.tag);
+        storeAndPrint(text);
       });
     }
   });
@@ -217,9 +234,9 @@ program
 program
   .command("remember <from> <to>")
   .description("List memories between two ISO timestamps")
-  .option("--tags <tags...>", "Filter by tag(s)")
+  .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .action((from, to, options) => {
-    remember(from, to, options.tags);
+    remember(from, to, options.tag.length > 0 ? options.tag : undefined);
   });
 
 program
@@ -232,9 +249,9 @@ program
 program
   .command("search <text>")
   .description("Search memories by content (case insensitive)")
-  .option("--tags <tags...>", "Filter by tag(s)")
+  .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .action((text, options) => {
-    search(text, options.tags);
+    search(text, options.tag.length > 0 ? options.tag : undefined);
   });
 
 program
@@ -243,8 +260,12 @@ program
   .option("-t, --tag <tag>", "Additional tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .action((textParts, options) => {
     const tags = ["task", "todo", ...options.tag];
+    function storeAndPrint(text) {
+      const { row, tags: allTags } = store(text, tags);
+      printMemoryPreview(row, allTags);
+    }
     if (textParts.length > 0) {
-      store(textParts.join(" "), tags);
+      storeAndPrint(textParts.join(" "));
     } else {
       let data = "";
       process.stdin.setEncoding("utf8");
@@ -255,39 +276,48 @@ program
           console.error("No input provided.");
           process.exit(1);
         }
-        store(text, tags);
+        storeAndPrint(text);
       });
     }
   });
 
 program
-  .command("list-tasks")
-  .description("List all tasks in 'todo' or 'wip' status")
-  .option("--tags <tags...>", "Additional tag(s) to filter by")
-  .action((options) => {
+  .command("list-tasks [status]")
+  .description("List tasks (default: todo and wip). Status: todo, wip, done")
+  .option("-t, --tag <tag>", "Additional tag(s) to filter by (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
+  .action((status, options) => {
+    const validStatuses = ["todo", "wip", "done"];
+    const statuses = status
+      ? [status]
+      : ["todo", "wip"];
+    if (status && !validStatuses.includes(status)) {
+      console.error(`Invalid status "${status}". Use: ${validStatuses.join(", ")}`);
+      process.exit(1);
+    }
     const db = getDb();
-    const extraFilter = options.tags && options.tags.length > 0;
+    const statusPlaceholders = statuses.map(() => "?").join(", ");
+    const extraFilter = options.tag.length > 0;
     let rows;
     if (extraFilter) {
-      const placeholders = options.tags.map(() => "?").join(", ");
+      const tagPlaceholders = options.tag.map(() => "?").join(", ");
       rows = db
         .prepare(
           `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
            JOIN memory_tags mt1 ON m.id = mt1.memory_id
            JOIN memory_tags mt2 ON m.id = mt2.memory_id
-           WHERE mt1.tag IN ('todo', 'wip') AND mt2.tag IN (${placeholders})
+           WHERE mt1.tag IN (${statusPlaceholders}) AND mt2.tag IN (${tagPlaceholders})
            ORDER BY m.timestamp`
         )
-        .all(...options.tags);
+        .all(...statuses, ...options.tag);
     } else {
       rows = db
         .prepare(
           `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
            JOIN memory_tags mt ON m.id = mt.memory_id
-           WHERE mt.tag IN ('todo', 'wip')
+           WHERE mt.tag IN (${statusPlaceholders})
            ORDER BY m.timestamp`
         )
-        .all();
+        .all(...statuses);
     }
     for (const row of rows) {
       const memoryTags = getTagsForMemory(db, row.id);
@@ -297,17 +327,15 @@ program
   });
 
 program
-  .command("start-task <id>")
-  .description("Mark a task as in-progress (set tag to 'wip')")
-  .action((id) => {
-    setTaskStatus(Number(id), "wip");
-  });
-
-program
-  .command("complete-task <id>")
-  .description("Mark a task as done (set tag to 'done')")
-  .action((id) => {
-    setTaskStatus(Number(id), "done");
+  .command("mark-task <id> <status>")
+  .description("Set task status: todo, wip, or done")
+  .action((id, status) => {
+    const validStatuses = ["todo", "wip", "done"];
+    if (!validStatuses.includes(status)) {
+      console.error(`Invalid status "${status}". Use: ${validStatuses.join(", ")}`);
+      process.exit(1);
+    }
+    setTaskStatus(Number(id), status);
   });
 
 program.parse();
