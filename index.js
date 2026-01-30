@@ -36,7 +36,11 @@ function getDb() {
       INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
     END;
   `);
-  db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`);
+  const ftsCount = db.prepare("SELECT COUNT(*) as n FROM memories_fts").get().n;
+  const memCount = db.prepare("SELECT COUNT(*) as n FROM memories").get().n;
+  if (ftsCount !== memCount) {
+    db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`);
+  }
   return db;
 }
 
