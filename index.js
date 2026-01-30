@@ -39,7 +39,7 @@ function store(text, tags) {
     .run(text);
   if (tags && tags.length > 0) {
     const insert = db.prepare(
-      "INSERT INTO memory_tags (memory_id, tag) VALUES (?, ?)"
+      "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)"
     );
     for (const tag of tags) {
       insert.run(lastInsertRowid, tag);
@@ -53,6 +53,32 @@ function getTagsForMemory(db, memoryId) {
     .prepare("SELECT tag FROM memory_tags WHERE memory_id = ? ORDER BY tag")
     .all(memoryId)
     .map((r) => r.tag);
+}
+
+function setTaskStatus(id, newTag) {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT id FROM memories WHERE id = ?")
+    .get(id);
+  if (!row) {
+    db.close();
+    console.log(`No memory found with id ${id}.`);
+    return;
+  }
+  const tags = getTagsForMemory(db, id);
+  if (!tags.includes("task")) {
+    db.close();
+    console.log(`Memory ${id} is not a task.`);
+    return;
+  }
+  db.prepare(
+    "DELETE FROM memory_tags WHERE memory_id = ? AND tag IN ('todo', 'wip', 'done')"
+  ).run(id);
+  db.prepare(
+    "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)"
+  ).run(id, newTag);
+  db.close();
+  console.log(`Task ${id} is now [${newTag}]`);
 }
 
 function printMemory(row, tags) {
@@ -209,6 +235,79 @@ program
   .option("--tags <tags...>", "Filter by tag(s)")
   .action((text, options) => {
     search(text, options.tags);
+  });
+
+program
+  .command("store-task [text...]")
+  .description("Store a task (automatically tagged with 'task' and 'todo')")
+  .option("-t, --tag <tag>", "Additional tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
+  .action((textParts, options) => {
+    const tags = ["task", "todo", ...options.tag];
+    if (textParts.length > 0) {
+      store(textParts.join(" "), tags);
+    } else {
+      let data = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => (data += chunk));
+      process.stdin.on("end", () => {
+        const text = data.trim();
+        if (!text) {
+          console.error("No input provided.");
+          process.exit(1);
+        }
+        store(text, tags);
+      });
+    }
+  });
+
+program
+  .command("list-tasks")
+  .description("List all tasks in 'todo' or 'wip' status")
+  .option("--tags <tags...>", "Additional tag(s) to filter by")
+  .action((options) => {
+    const db = getDb();
+    const extraFilter = options.tags && options.tags.length > 0;
+    let rows;
+    if (extraFilter) {
+      const placeholders = options.tags.map(() => "?").join(", ");
+      rows = db
+        .prepare(
+          `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
+           JOIN memory_tags mt1 ON m.id = mt1.memory_id
+           JOIN memory_tags mt2 ON m.id = mt2.memory_id
+           WHERE mt1.tag IN ('todo', 'wip') AND mt2.tag IN (${placeholders})
+           ORDER BY m.timestamp`
+        )
+        .all(...options.tags);
+    } else {
+      rows = db
+        .prepare(
+          `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
+           JOIN memory_tags mt ON m.id = mt.memory_id
+           WHERE mt.tag IN ('todo', 'wip')
+           ORDER BY m.timestamp`
+        )
+        .all();
+    }
+    for (const row of rows) {
+      const memoryTags = getTagsForMemory(db, row.id);
+      printMemory(row, memoryTags);
+    }
+    db.close();
+  });
+
+program
+  .command("start-task <id>")
+  .description("Mark a task as in-progress (set tag to 'wip')")
+  .action((id) => {
+    setTaskStatus(Number(id), "wip");
+  });
+
+program
+  .command("complete-task <id>")
+  .description("Mark a task as done (set tag to 'done')")
+  .action((id) => {
+    setTaskStatus(Number(id), "done");
   });
 
 program.parse();
