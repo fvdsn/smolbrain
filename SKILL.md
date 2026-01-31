@@ -101,8 +101,21 @@ smolbrain ls --tail 5 --json
 
 ## Guidelines
 
+### Saving memories (important!)
+
+Do NOT wait until the end of a session to save memories. Save as you go, immediately after:
+
+- **Completing a task or subtask** — what was done, what changed
+- **Making a decision** — what was chosen and why
+- **Discovering something** — a bug, a pattern, how something works
+- **Hitting a blocker** — what went wrong, what was tried
+- **Committing code** — summarize the changes
+
+If the context were lost right now, would you lose important information? If yes, save a memory.
+
+### General
+
 - Run `smolbrain status` at the start of each session
-- Save progress frequently: after completing a step, making a decision, or discovering something important, store it as a memory so it survives context loss
 - Prefer `search` over `find` — it understands meaning, not just keywords
 - Search before storing to avoid duplicates
 - Use tags consistently to group related memories
