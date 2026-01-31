@@ -129,6 +129,11 @@ function queryMemories(db, { joins = [], wheres = ["1=1"], params = [], limit, o
     allParams.push(offset);
   }
 
+  const countSql = `SELECT COUNT(DISTINCT m.id) as total FROM memories m
+    ${joins.join(" ")}
+    WHERE ${wheres.join(" AND ")}`;
+  const total = db.prepare(countSql).get(...params).total;
+
   const sql = `SELECT DISTINCT m.id, m.timestamp, m.content FROM memories m
     ${joins.join(" ")}
     WHERE ${wheres.join(" AND ")}
@@ -137,7 +142,14 @@ function queryMemories(db, { joins = [], wheres = ["1=1"], params = [], limit, o
 
   let rows = db.prepare(sql).all(...allParams);
   if (tail) rows.reverse();
-  return rows;
+  return { rows, total };
+}
+
+function printPagination(shown, total, offset) {
+  const remaining = total - (offset || 0) - shown;
+  if (remaining > 0) {
+    console.log(`(${remaining} more result${remaining === 1 ? "" : "s"} available)`);
+  }
 }
 
 function applyFilters(query, { from, to, tags, all, tagAlias = "mt" } = {}) {
@@ -163,8 +175,9 @@ function list({ from, to, tags, all, limit, tail, offset, json } = {}) {
   const db = getDb();
   const query = { joins: [], wheres: ["1=1"], params: [] };
   applyFilters(query, { from, to, tags, all });
+  if (!limit && !tail) limit = 20;
 
-  const rows = queryMemories(db, { ...query, limit, tail, offset });
+  const { rows, total } = queryMemories(db, { ...query, limit, tail, offset });
 
   if (json) {
     console.log(JSON.stringify(rows.map((row) => formatMemory(db, row))));
@@ -173,6 +186,7 @@ function list({ from, to, tags, all, limit, tail, offset, json } = {}) {
       const memoryTags = getTagsForMemory(db, row.id);
       printMemory(row, memoryTags);
     }
+    printPagination(rows.length, total, offset);
   }
   db.close();
 }
@@ -202,8 +216,9 @@ function search(text, { from, to, tags, all, limit, tail, offset, json } = {}) {
   const ftsQuery = text.split(/\s+/).filter(Boolean).map((t) => `"${t.replace(/"/g, '""')}"`).join(" ");
   const query = { joins: ["JOIN memories_fts ON m.id = memories_fts.rowid"], wheres: ["memories_fts MATCH ?"], params: [ftsQuery] };
   applyFilters(query, { from, to, tags, all });
+  if (!limit && !tail) limit = 20;
 
-  const rows = queryMemories(db, { ...query, limit, tail, offset });
+  const { rows, total } = queryMemories(db, { ...query, limit, tail, offset });
 
   if (json) {
     console.log(JSON.stringify(rows.map((row) => formatMemory(db, row))));
@@ -247,6 +262,7 @@ function search(text, { from, to, tags, all, limit, tail, offset, json } = {}) {
     const suffix = sorted[sorted.length - 1] < lines.length - 1 ? "\n[...]\n" : "\n";
     console.log(prefix + parts.join("\n[...]\n") + suffix);
   }
+  printPagination(rows.length, total, offset);
   db.close();
 }
 
@@ -417,7 +433,8 @@ program
       tagAlias: "mt2",
     });
 
-    const rows = queryMemories(db, { ...query, limit: options.limit, tail: options.tail, offset: options.offset });
+    const limit = options.limit || options.tail ? options.limit : 20;
+    const { rows, total } = queryMemories(db, { ...query, limit, tail: options.tail, offset: options.offset });
 
     if (options.json) {
       console.log(JSON.stringify(rows.map((row) => formatMemory(db, row))));
@@ -426,6 +443,7 @@ program
         const memoryTags = getTagsForMemory(db, row.id);
         printMemory(row, memoryTags);
       }
+      printPagination(rows.length, total, options.offset);
     }
     db.close();
   });
