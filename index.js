@@ -256,7 +256,7 @@ function getById(id, { json } = {}) {
   db.close();
 }
 
-function search(text, { from, to, tags, all, limit, tail, offset, json } = {}) {
+function find(text, { from, to, tags, all, limit, tail, offset, json } = {}) {
   const db = getDb();
   const ftsQuery = text.split(/\s+/).filter(Boolean).map((t) => `"${t.replace(/"/g, '""')}"`).join(" ");
   const query = { joins: ["JOIN memories_fts ON m.id = memories_fts.rowid"], wheres: ["memories_fts MATCH ?"], params: [ftsQuery] };
@@ -393,9 +393,9 @@ program
 addFilterOptions(
   program
     .command("find <text>")
-    .description("Search memories by content")
+    .description("Search memories by keyword")
 ).action((text, options) => {
-    search(text, parseFilterOptions(options));
+    find(text, parseFilterOptions(options));
   });
 
 program
@@ -611,72 +611,54 @@ program
     db.close();
   });
 
+async function search(text, { from, to, tags, all, limit, tail, offset, json } = {}) {
+  const queryBuf = await embed(text);
+  const queryVec = new Float32Array(queryBuf.buffer, queryBuf.byteOffset, queryBuf.byteLength / 4);
+  const db = getDb();
+  const query = { joins: [], wheres: ["m.embedding IS NOT NULL"], params: [] };
+  applyFilters(query, { from, to, tags, all });
+  const sql = `SELECT m.id, m.timestamp, m.content, m.embedding FROM memories m
+    ${query.joins.join(" ")}
+    WHERE ${query.wheres.join(" AND ")}`;
+  const rows = db.prepare(sql).all(...query.params);
+  const scored = rows.map((row) => {
+    const vec = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
+    return { id: row.id, timestamp: row.timestamp, content: row.content, similarity: cosineSimilarity(queryVec, vec) };
+  });
+  scored.sort((a, b) => b.similarity - a.similarity);
+  const effectiveOffset = offset || 0;
+  const count = limit || tail || 10;
+  const sliced = tail
+    ? scored.slice(Math.max(0, scored.length - effectiveOffset - count), scored.length - effectiveOffset).reverse()
+    : scored.slice(effectiveOffset, effectiveOffset + count);
+  const total = scored.length;
+  if (json) {
+    console.log(JSON.stringify(sliced.map((r) => ({
+      ...r,
+      tags: getTagsForMemory(db, r.id),
+      similarity: Math.round(r.similarity * 1000) / 1000,
+    }))));
+  } else {
+    for (const r of sliced) {
+      const tags = getTagsForMemory(db, r.id);
+      const sim = Math.round(r.similarity * 1000) / 1000;
+      const lines = r.content.split("\n");
+      const preview = lines.slice(0, 3).join("\n");
+      const ellipsis = lines.length > 3 ? "\n[...]" : "";
+      console.log(`[${r.id}] [${r.timestamp}]${formatTagSuffix(tags)} (${sim})\n${preview}${ellipsis}\n`);
+    }
+    printPagination(sliced.length, total, effectiveOffset);
+  }
+  db.close();
+}
+
 addFilterOptions(
   program
-    .command("similar <text>")
-    .description("Find semantically similar memories")
+    .command("search <text>")
+    .description("Search memories by meaning (semantic search)")
 ).action(async (text, options) => {
-    const { tags, from, to, all, limit, tail, offset, json } = parseFilterOptions(options);
-    const queryBuf = await embed(text);
-    const queryVec = new Float32Array(queryBuf.buffer, queryBuf.byteOffset, queryBuf.byteLength / 4);
-    const db = getDb();
-    const query = { joins: [], wheres: ["m.embedding IS NOT NULL"], params: [] };
-    applyFilters(query, { from, to, tags, all });
-    const sql = `SELECT m.id, m.timestamp, m.content, m.embedding FROM memories m
-      ${query.joins.join(" ")}
-      WHERE ${query.wheres.join(" AND ")}`;
-    const rows = db.prepare(sql).all(...query.params);
-    const scored = rows.map((row) => {
-      const vec = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
-      return { id: row.id, timestamp: row.timestamp, content: row.content, similarity: cosineSimilarity(queryVec, vec) };
-    });
-    scored.sort((a, b) => b.similarity - a.similarity);
-    const effectiveOffset = offset || 0;
-    const count = limit || tail || 10;
-    const sliced = tail
-      ? scored.slice(Math.max(0, scored.length - effectiveOffset - count), scored.length - effectiveOffset).reverse()
-      : scored.slice(effectiveOffset, effectiveOffset + count);
-    const total = scored.length;
-    if (json) {
-      console.log(JSON.stringify(sliced.map((r) => ({
-        ...r,
-        tags: getTagsForMemory(db, r.id),
-        similarity: Math.round(r.similarity * 1000) / 1000,
-      }))));
-    } else {
-      for (const r of sliced) {
-        const tags = getTagsForMemory(db, r.id);
-        const sim = Math.round(r.similarity * 1000) / 1000;
-        const lines = r.content.split("\n");
-        const preview = lines.slice(0, 3).join("\n");
-        const ellipsis = lines.length > 3 ? "\n[...]" : "";
-        console.log(`[${r.id}] [${r.timestamp}]${formatTagSuffix(tags)} (${sim})\n${preview}${ellipsis}\n`);
-      }
-      printPagination(sliced.length, total, effectiveOffset);
-    }
-    db.close();
+    await search(text, parseFilterOptions(options));
   });
 
-program
-  .command("embed")
-  .description("Generate embeddings for all memories that lack them")
-  .action(async () => {
-    const db = getDb();
-    const rows = db.prepare("SELECT id, content FROM memories WHERE embedding IS NULL").all();
-    if (rows.length === 0) {
-      console.log("All memories already have embeddings.");
-      db.close();
-      return;
-    }
-    console.log(`Generating embeddings for ${rows.length} memories...`);
-    const update = db.prepare("UPDATE memories SET embedding = ? WHERE id = ?");
-    for (let i = 0; i < rows.length; i++) {
-      const buf = await embed(rows[i].content);
-      update.run(buf, rows[i].id);
-      process.stdout.write(`\r  ${i + 1}/${rows.length}`);
-    }
-    console.log("\nDone.");
-    db.close();
-  });
 
 program.parse();

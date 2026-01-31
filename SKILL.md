@@ -6,7 +6,7 @@ allowed-tools: Bash(smolbrain *)
 
 # smolbrain - Long-term memory
 
-A local SQLite-backed memory store with full-text search. Use it to persist information across sessions.
+A local SQLite-backed memory store with semantic and full-text search. Use it to persist information across sessions.
 
 ## When to use
 
@@ -34,7 +34,11 @@ smolbrain add -t project-x "deploy requires VPN access"
 # Pipe longer content
 echo "detailed notes here" | smolbrain add -t meeting
 
-# Full-text search
+# Semantic search (finds related memories by meaning)
+smolbrain search "how do we handle auth"
+smolbrain search "deploy process" -t project-x
+
+# Keyword search (FTS5, exact match)
 smolbrain find "auth"
 smolbrain find "deploy" -t project-x
 
@@ -83,13 +87,14 @@ smolbrain ls --limit 10 --offset 5 # skip 5, then show 10
 smolbrain ls --tail 10             # last 10 results
 ```
 
-`--limit`, `--tail`, `--offset`, `--from`, and `--to` work on `ls`, `find`, and `tasks`.
+`--limit`, `--tail`, `--offset`, `--from`, and `--to` work on `ls`, `find`, `search`, and `tasks`.
 
 ### Structured output
 
 All listing commands support `--json` for structured output:
 
 ```bash
+smolbrain search "auth" --json
 smolbrain find "auth" --json
 smolbrain ls --tail 5 --json
 ```
@@ -98,6 +103,7 @@ smolbrain ls --tail 5 --json
 
 - Run `smolbrain status` at the start of each session
 - Save progress frequently: after completing a step, making a decision, or discovering something important, store it as a memory so it survives context loss
+- Prefer `search` over `find` — it understands meaning, not just keywords
 - Search before storing to avoid duplicates
 - Use tags consistently to group related memories
 - Prefer short, factual memories over long narratives

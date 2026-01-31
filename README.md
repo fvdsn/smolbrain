@@ -1,6 +1,6 @@
 # smolbrain
 
-Long-term memory for AI agents. A local-first CLI tool backed by SQLite with full-text search.
+Long-term memory for AI agents. A local-first CLI tool backed by SQLite with semantic search and full-text search.
 
 ## Install
 
@@ -29,7 +29,10 @@ smolbrain ls --from 2025-01-01 --to 2025-12-31
 # Get a specific memory
 smolbrain get 42
 
-# Full-text search (FTS5)
+# Semantic search (finds related memories by meaning)
+smolbrain search "how do we handle auth"
+
+# Keyword search (FTS5, exact match)
 smolbrain find "credentials"
 smolbrain find "deploy key" -t ops
 
@@ -76,7 +79,7 @@ smolbrain ls --limit 10 --offset 5 # skip 5, then show 10
 smolbrain ls --tail 10             # last 10 results
 ```
 
-`--limit`, `--tail`, `--offset`, `--from`, and `--to` work on `ls`, `find`, and `tasks`.
+`--limit`, `--tail`, `--offset`, `--from`, and `--to` work on `ls`, `find`, `search`, and `tasks`.
 
 ### Output
 
@@ -84,6 +87,7 @@ All listing commands support `--json` for structured output:
 
 ```bash
 smolbrain ls --json
+smolbrain search "deploy" --json
 smolbrain find "deploy" --json
 smolbrain get 42 --json
 ```
@@ -95,7 +99,8 @@ smolbrain get 42 --json
 | `add [text...]` | Store a memory (args or stdin) |
 | `ls` | List memories |
 | `get <id>` | Retrieve a memory by ID |
-| `find <text>` | Full-text search |
+| `search <text>` | Semantic search (by meaning) |
+| `find <text>` | Keyword search (FTS5) |
 | `edit <id> [text...]` | Replace content (archives original) |
 | `tag <id> <tag>` | Add a tag |
 | `untag <id> <tag>` | Remove a tag |
@@ -119,7 +124,8 @@ Claude will then use smolbrain to store and recall information across sessions.
 
 ## Design
 
-- **SQLite + FTS5** for storage and search. No external services.
+- **Semantic search** using all-MiniLM-L6-v2 embeddings. `search` finds memories by meaning, not just keywords.
+- **SQLite + FTS5** for storage and keyword search. No external services.
 - **Soft-delete** by default. `rm` archives, `restore` brings it back. Nothing is lost.
 - **Edit creates a new version** and archives the original. History is preserved.
 - **Tags** for flexible organization. Tasks are just memories with `task` + status tags.

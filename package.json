@@ -1,7 +1,7 @@
 {
   "name": "smolbrain",
-  "version": "1.1.0",
-  "description": "Long-term memory for AI agents. Local-first CLI backed by SQLite with full-text search.",
+  "version": "1.2.0",
+  "description": "Long-term memory for AI agents. Local-first CLI backed by SQLite with semantic and full-text search.",
   "main": "index.js",
   "bin": {
     "smolbrain": "./index.js"
@@ -9,7 +9,16 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["ai", "memory", "agent", "cli", "sqlite", "fts5"],
+  "keywords": [
+    "ai",
+    "memory",
+    "agent",
+    "cli",
+    "sqlite",
+    "fts5",
+    "embeddings",
+    "semantic-search"
+  ],
   "author": "fvdsn",
   "license": "ISC",
   "repository": {
@@ -17,8 +26,13 @@
     "url": "git+https://github.com/fvdsn/smolbrain.git"
   },
   "homepage": "https://github.com/fvdsn/smolbrain",
-  "files": ["index.js", "README.md", "SKILL.md"],
+  "files": [
+    "index.js",
+    "README.md",
+    "SKILL.md"
+  ],
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "better-sqlite3": "^12.6.2",
     "commander": "^14.0.2"
   }
