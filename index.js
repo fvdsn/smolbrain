@@ -591,4 +591,59 @@ program
     console.log(`Memory ${id} restored.`);
   });
 
+program
+  .command("status")
+  .description("Overview of open tasks and recent memories")
+  .option("--json", "Output as JSON")
+  .action((options) => {
+    const db = getDb();
+
+    const taskQuery = {
+      joins: ["JOIN memory_tags mt1 ON m.id = mt1.memory_id"],
+      wheres: ["mt1.tag IN ('todo', 'wip')"],
+      params: [],
+    };
+    applyFilters(taskQuery, {});
+    const { rows: tasks } = queryMemories(db, { ...taskQuery });
+
+    const recentQuery = { joins: [], wheres: ["1=1"], params: [] };
+    applyFilters(recentQuery, {});
+    const { rows: recent } = queryMemories(db, { ...recentQuery, tail: 20 });
+
+    if (options.json) {
+      console.log(JSON.stringify({
+        tasks: tasks.map((row) => formatMemory(db, row)),
+        recent: recent.map((row) => formatMemory(db, row)),
+      }));
+      db.close();
+      return;
+    }
+
+    const taskStatusTags = ["todo", "wip", "done"];
+    console.log(`Tasks (${tasks.length} open):`);
+    if (tasks.length === 0) {
+      console.log("  No open tasks.\n");
+    } else {
+      for (const row of tasks) {
+        const tags = getTagsForMemory(db, row.id);
+        const status = tags.find((t) => taskStatusTags.includes(t)) || "todo";
+        const otherTags = tags.filter((t) => !taskStatusTags.includes(t) && t !== "task");
+        const tagStr = otherTags.length > 0 ? ` [${otherTags.join(", ")}]` : "";
+        const firstLine = row.content.split("\n")[0];
+        console.log(`  [${row.id}] [${status}]${tagStr} ${firstLine}`);
+      }
+      console.log();
+    }
+
+    console.log("Recent:");
+    for (const row of recent) {
+      const tags = getTagsForMemory(db, row.id);
+      const tagStr = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
+      const firstLine = row.content.split("\n")[0];
+      console.log(`  [${row.id}]${tagStr} ${firstLine}`);
+    }
+
+    db.close();
+  });
+
 program.parse();

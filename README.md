@@ -61,6 +61,13 @@ smolbrain mark 7 wip
 smolbrain mark 7 done
 ```
 
+### Status
+
+```bash
+# Overview of open tasks and recent memories
+smolbrain status
+```
+
 ### Pagination
 
 ```bash
@@ -97,6 +104,7 @@ smolbrain get 42 --json
 | `task [text...]` | Store a task |
 | `tasks [status]` | List tasks |
 | `mark <id> <status>` | Set task status (todo/wip/done) |
+| `status` | Overview of open tasks and recent memories |
 
 ## Claude Code skill
 

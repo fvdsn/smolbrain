@@ -10,11 +10,19 @@ A local SQLite-backed memory store with full-text search. Use it to persist info
 
 ## When to use
 
+- **Status**: at the start of a session, run `smolbrain status` to see open tasks and recent memories
 - **Store**: when you learn something worth remembering (decisions, preferences, project context, debugging findings)
 - **Search**: when you need to recall prior context before starting work
 - **Tasks**: when tracking work items across sessions
 
 ## Commands
+
+### Status
+
+```bash
+# Overview of open tasks and recent memories
+smolbrain status
+```
 
 ### Store and retrieve
 
