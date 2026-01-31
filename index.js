@@ -36,6 +36,11 @@ function getDb() {
       INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
     END;
   `);
+  try {
+    db.exec("ALTER TABLE memories ADD COLUMN embedding BLOB");
+  } catch (_) {
+    // column already exists
+  }
   const ftsCount = db.prepare("SELECT COUNT(*) as n FROM memories_fts").get().n;
   const memCount = db.prepare("SELECT COUNT(*) as n FROM memories").get().n;
   if (ftsCount !== memCount) {
@@ -44,7 +49,29 @@ function getDb() {
   return db;
 }
 
-function store(text, tags) {
+let _pipeline = null;
+
+async function getEmbedder() {
+  if (!_pipeline) {
+    const { pipeline } = await import("@huggingface/transformers");
+    _pipeline = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", { dtype: "fp32" });
+  }
+  return _pipeline;
+}
+
+async function embed(text) {
+  const extractor = await getEmbedder();
+  const output = await extractor(text, { pooling: "mean", normalize: true });
+  return Buffer.from(output.data.buffer);
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot; // vectors are pre-normalized, so dot product = cosine similarity
+}
+
+async function store(text, tags) {
   const db = getDb();
   const { lastInsertRowid } = db
     .prepare("INSERT INTO memories (content) VALUES (?)")
@@ -57,6 +84,8 @@ function store(text, tags) {
       insert.run(lastInsertRowid, tag);
     }
   }
+  const buf = await embed(text);
+  db.prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(buf, lastInsertRowid);
   const row = db
     .prepare("SELECT id, timestamp, content FROM memories WHERE id = ?")
     .get(lastInsertRowid);
@@ -98,17 +127,33 @@ function setTaskStatus(id, newTag) {
   console.log(`Task ${id} is now [${newTag}]`);
 }
 
+const VALID_STATUSES = ["todo", "wip", "done"];
+
+function formatTagSuffix(tags) {
+  return tags && tags.length > 0 ? ` [${tags.join(", ")}]` : "";
+}
+
+function withMemory(id, fn) {
+  const db = getDb();
+  const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
+  if (!row) {
+    db.close();
+    console.log(`No memory found with id ${id}.`);
+    return;
+  }
+  fn(db, row);
+}
+
 function formatMemory(db, row) {
   return { id: row.id, timestamp: row.timestamp, content: row.content, tags: getTagsForMemory(db, row.id) };
 }
 
 function printMemory(row, tags) {
-  const tagSuffix = tags && tags.length > 0 ? ` [${tags.join(", ")}]` : "";
-  console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${row.content}\n`);
+  console.log(`[${row.id}] [${row.timestamp}]${formatTagSuffix(tags)}\n${row.content}\n`);
 }
 
 function printMemoryPreview(row, tags) {
-  const tagSuffix = tags && tags.length > 0 ? ` [${tags.join(", ")}]` : "";
+  const tagSuffix = formatTagSuffix(tags);
   const lines = row.content.split("\n");
   const preview = lines.slice(0, 3).join("\n");
   const ellipsis = lines.length > 3 ? "\n[...]" : "";
@@ -256,14 +301,59 @@ function search(text, { from, to, tags, all, limit, tail, offset, json } = {}) {
     }
 
     const memoryTags = getTagsForMemory(db, row.id);
-    const tagSuffix = memoryTags.length > 0 ? ` [${memoryTags.join(", ")}]` : "";
-    console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}`);
+    console.log(`[${row.id}] [${row.timestamp}]${formatTagSuffix(memoryTags)}`);
     const prefix = sorted[0] > 0 ? "[...]\n" : "";
     const suffix = sorted[sorted.length - 1] < lines.length - 1 ? "\n[...]\n" : "\n";
     console.log(prefix + parts.join("\n[...]\n") + suffix);
   }
   printPagination(rows.length, total, offset);
   db.close();
+}
+
+function readInput(textParts, callback) {
+  if (textParts.length > 0) {
+    return callback(textParts.join(" "));
+  }
+  let data = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => (data += chunk));
+  process.stdin.on("end", async () => {
+    const text = data.trim();
+    if (!text) {
+      console.error("No input provided.");
+      process.exit(1);
+    }
+    await callback(text);
+  });
+}
+
+function addFilterOptions(cmd) {
+  return cmd
+    .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
+    .option("--from <date>", "Start date (inclusive)")
+    .option("--to <date>", "End date (inclusive)")
+    .option("--limit <n>", "Show first N results (oldest first)", Number)
+    .option("--tail <n>", "Show last N results (chronological order)", Number)
+    .option("--offset <n>", "Skip first N results", Number)
+    .option("-a, --all", "Include archived memories")
+    .option("--json", "Output as JSON");
+}
+
+function parseFilterOptions(options) {
+  if (options.limit && options.tail) {
+    console.error("Error: --limit and --tail are mutually exclusive.");
+    process.exit(1);
+  }
+  return {
+    from: options.from,
+    to: options.to,
+    tags: options.tag.length > 0 ? options.tag : undefined,
+    all: options.all,
+    limit: options.limit,
+    tail: options.tail,
+    offset: options.offset,
+    json: options.json,
+  };
 }
 
 program.name("smolbrain").description("Long-term memory for AI agents");
@@ -273,58 +363,23 @@ program
   .description("Store a memory (pass text as args or pipe via stdin)")
   .option("-t, --tag <tag>", "Tag(s) to attach to the memory (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .option("--json", "Output as JSON")
-  .action((textParts, options) => {
-    function storeAndPrint(text) {
-      const { row, tags } = store(text, options.tag.length > 0 ? options.tag : undefined);
+  .action(async (textParts, options) => {
+    readInput(textParts, async (text) => {
+      const { row, tags } = await store(text, options.tag.length > 0 ? options.tag : undefined);
       if (options.json) {
         console.log(JSON.stringify({ id: row.id, timestamp: row.timestamp, content: row.content, tags }));
       } else {
         printMemoryPreview(row, tags);
       }
-    }
-    if (textParts.length > 0) {
-      storeAndPrint(textParts.join(" "));
-    } else {
-      let data = "";
-      process.stdin.setEncoding("utf8");
-      process.stdin.on("data", (chunk) => (data += chunk));
-      process.stdin.on("end", () => {
-        const text = data.trim();
-        if (!text) {
-          console.error("No input provided.");
-          process.exit(1);
-        }
-        storeAndPrint(text);
-      });
-    }
+    });
   });
 
-program
-  .command("ls")
-  .description("List memories, optionally filtered by date range, tags, limit")
-  .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
-  .option("--from <date>", "Start date (inclusive)")
-  .option("--to <date>", "End date (inclusive)")
-  .option("--limit <n>", "Show first N results (oldest first)", Number)
-  .option("--tail <n>", "Show last N results (chronological order)", Number)
-  .option("--offset <n>", "Skip first N results", Number)
-  .option("-a, --all", "Include archived memories")
-  .option("--json", "Output as JSON")
-  .action((options) => {
-    if (options.limit && options.tail) {
-      console.error("Error: --limit and --tail are mutually exclusive.");
-      process.exit(1);
-    }
-    list({
-      from: options.from,
-      to: options.to,
-      tags: options.tag.length > 0 ? options.tag : undefined,
-      all: options.all,
-      limit: options.limit,
-      tail: options.tail,
-      offset: options.offset,
-      json: options.json,
-    });
+addFilterOptions(
+  program
+    .command("ls")
+    .description("List memories, optionally filtered by date range, tags, limit")
+).action((options) => {
+    list(parseFilterOptions(options));
   });
 
 program
@@ -335,32 +390,12 @@ program
     getById(Number(id), { json: options.json });
   });
 
-program
-  .command("find <text>")
-  .description("Search memories by content")
-  .option("-t, --tag <tag>", "Filter by tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
-  .option("--from <date>", "Start date (inclusive)")
-  .option("--to <date>", "End date (inclusive)")
-  .option("--limit <n>", "Show first N results (oldest first)", Number)
-  .option("--tail <n>", "Show last N results (chronological order)", Number)
-  .option("--offset <n>", "Skip first N results", Number)
-  .option("-a, --all", "Include archived memories")
-  .option("--json", "Output as JSON")
-  .action((text, options) => {
-    if (options.limit && options.tail) {
-      console.error("Error: --limit and --tail are mutually exclusive.");
-      process.exit(1);
-    }
-    search(text, {
-      from: options.from,
-      to: options.to,
-      tags: options.tag.length > 0 ? options.tag : undefined,
-      all: options.all,
-      limit: options.limit,
-      tail: options.tail,
-      offset: options.offset,
-      json: options.json,
-    });
+addFilterOptions(
+  program
+    .command("find <text>")
+    .description("Search memories by content")
+).action((text, options) => {
+    search(text, parseFilterOptions(options));
   });
 
 program
@@ -368,55 +403,29 @@ program
   .description("Store a task (automatically tagged with 'task' and 'todo')")
   .option("-t, --tag <tag>", "Additional tag(s) (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
   .option("--json", "Output as JSON")
-  .action((textParts, options) => {
+  .action(async (textParts, options) => {
     const tags = ["task", "todo", ...options.tag];
-    function storeAndPrint(text) {
-      const { row, tags: allTags } = store(text, tags);
+    readInput(textParts, async (text) => {
+      const { row, tags: allTags } = await store(text, tags);
       if (options.json) {
         console.log(JSON.stringify({ id: row.id, timestamp: row.timestamp, content: row.content, tags: allTags }));
       } else {
         printMemoryPreview(row, allTags);
       }
-    }
-    if (textParts.length > 0) {
-      storeAndPrint(textParts.join(" "));
-    } else {
-      let data = "";
-      process.stdin.setEncoding("utf8");
-      process.stdin.on("data", (chunk) => (data += chunk));
-      process.stdin.on("end", () => {
-        const text = data.trim();
-        if (!text) {
-          console.error("No input provided.");
-          process.exit(1);
-        }
-        storeAndPrint(text);
-      });
-    }
+    });
   });
 
-program
-  .command("tasks [status]")
-  .description("List tasks (default: todo and wip). Status: todo, wip, done")
-  .option("-t, --tag <tag>", "Additional tag(s) to filter by (repeatable)", (val, acc) => { acc.push(val); return acc; }, [])
-  .option("--from <date>", "Start date (inclusive)")
-  .option("--to <date>", "End date (inclusive)")
-  .option("--limit <n>", "Show first N results (oldest first)", Number)
-  .option("--tail <n>", "Show last N results (chronological order)", Number)
-  .option("--offset <n>", "Skip first N results", Number)
-  .option("-a, --all", "Include archived tasks")
-  .option("--json", "Output as JSON")
-  .action((status, options) => {
-    if (options.limit && options.tail) {
-      console.error("Error: --limit and --tail are mutually exclusive.");
-      process.exit(1);
-    }
-    const validStatuses = ["todo", "wip", "done"];
+addFilterOptions(
+  program
+    .command("tasks [status]")
+    .description("List tasks (default: todo and wip). Status: todo, wip, done")
+).action((status, options) => {
+    const { tags, from, to, all, limit, tail, offset, json } = parseFilterOptions(options);
     const statuses = status
       ? [status]
       : ["todo", "wip"];
-    if (status && !validStatuses.includes(status)) {
-      console.error(`Invalid status "${status}". Use: ${validStatuses.join(", ")}`);
+    if (status && !VALID_STATUSES.includes(status)) {
+      console.error(`Invalid status "${status}". Use: ${VALID_STATUSES.join(", ")}`);
       process.exit(1);
     }
     const db = getDb();
@@ -425,25 +434,19 @@ program
       wheres: [`mt1.tag IN (${statuses.map(() => "?").join(", ")})`],
       params: [...statuses],
     };
-    applyFilters(query, {
-      from: options.from,
-      to: options.to,
-      tags: options.tag.length > 0 ? options.tag : undefined,
-      all: options.all,
-      tagAlias: "mt2",
-    });
+    applyFilters(query, { from, to, tags, all, tagAlias: "mt2" });
 
-    const limit = options.limit || options.tail ? options.limit : 20;
-    const { rows, total } = queryMemories(db, { ...query, limit, tail: options.tail, offset: options.offset });
+    const effectiveLimit = limit || tail ? limit : 20;
+    const { rows, total } = queryMemories(db, { ...query, limit: effectiveLimit, tail, offset });
 
-    if (options.json) {
+    if (json) {
       console.log(JSON.stringify(rows.map((row) => formatMemory(db, row))));
     } else {
       for (const row of rows) {
         const memoryTags = getTagsForMemory(db, row.id);
         printMemory(row, memoryTags);
       }
-      printPagination(rows.length, total, options.offset);
+      printPagination(rows.length, total, offset);
     }
     db.close();
   });
@@ -452,9 +455,8 @@ program
   .command("mark <id> <status>")
   .description("Set task status: todo, wip, or done")
   .action((id, status) => {
-    const validStatuses = ["todo", "wip", "done"];
-    if (!validStatuses.includes(status)) {
-      console.error(`Invalid status "${status}". Use: ${validStatuses.join(", ")}`);
+    if (!VALID_STATUSES.includes(status)) {
+      console.error(`Invalid status "${status}". Use: ${VALID_STATUSES.join(", ")}`);
       process.exit(1);
     }
     setTaskStatus(Number(id), status);
@@ -464,8 +466,8 @@ program
   .command("edit <id> [text...]")
   .description("Replace a memory's content (archives the original)")
   .option("--json", "Output as JSON")
-  .action((id, textParts, options) => {
-    function editAndPrint(newText) {
+  .action(async (id, textParts, options) => {
+    readInput(textParts, async (newText) => {
       const db = getDb();
       const old = db.prepare("SELECT id, timestamp, content FROM memories WHERE id = ?").get(Number(id));
       if (!old) {
@@ -480,6 +482,8 @@ program
       for (const tag of oldTags) {
         insertTag.run(lastInsertRowid, tag);
       }
+      const buf = await embed(newText);
+      db.prepare("UPDATE memories SET embedding = ? WHERE id = ?").run(buf, lastInsertRowid);
       const row = db.prepare("SELECT id, timestamp, content FROM memories WHERE id = ?").get(lastInsertRowid);
       const newTags = getTagsForMemory(db, lastInsertRowid);
       db.close();
@@ -489,106 +493,70 @@ program
         console.log(`Memory ${old.id} archived. New memory stored as ${row.id}.`);
         printMemoryPreview(row, newTags);
       }
-    }
-    if (textParts.length > 0) {
-      editAndPrint(textParts.join(" "));
-    } else {
-      let data = "";
-      process.stdin.setEncoding("utf8");
-      process.stdin.on("data", (chunk) => (data += chunk));
-      process.stdin.on("end", () => {
-        const text = data.trim();
-        if (!text) {
-          console.error("No input provided.");
-          process.exit(1);
-        }
-        editAndPrint(text);
-      });
-    }
+    });
   });
 
 program
   .command("tag <id> <tag>")
   .description("Add a tag to a memory")
   .action((id, tag) => {
-    const db = getDb();
-    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
-    if (!row) {
+    withMemory(id, (db, row) => {
+      db.prepare("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)").run(row.id, tag);
+      const tags = getTagsForMemory(db, row.id);
       db.close();
-      console.log(`No memory found with id ${id}.`);
-      return;
-    }
-    db.prepare("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)").run(row.id, tag);
-    const tags = getTagsForMemory(db, row.id);
-    db.close();
-    console.log(`Memory ${id} [${tags.join(", ")}]`);
+      console.log(`Memory ${id} [${tags.join(", ")}]`);
+    });
   });
 
 program
   .command("untag <id> <tag>")
   .description("Remove a tag from a memory")
   .action((id, tag) => {
-    const db = getDb();
-    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
-    if (!row) {
+    withMemory(id, (db, row) => {
+      const changes = db.prepare("DELETE FROM memory_tags WHERE memory_id = ? AND tag = ?").run(row.id, tag).changes;
+      if (changes === 0) {
+        db.close();
+        console.log(`Memory ${id} does not have tag "${tag}".`);
+        return;
+      }
+      const tags = getTagsForMemory(db, row.id);
       db.close();
-      console.log(`No memory found with id ${id}.`);
-      return;
-    }
-    const changes = db.prepare("DELETE FROM memory_tags WHERE memory_id = ? AND tag = ?").run(row.id, tag).changes;
-    if (changes === 0) {
-      db.close();
-      console.log(`Memory ${id} does not have tag "${tag}".`);
-      return;
-    }
-    const tags = getTagsForMemory(db, row.id);
-    db.close();
-    const tagStr = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
-    console.log(`Memory ${id}${tagStr}`);
+      console.log(`Memory ${id}${formatTagSuffix(tags)}`);
+    });
   });
 
 program
   .command("rm <id>")
   .description("Soft-delete a memory (tag as archived)")
   .action((id) => {
-    const db = getDb();
-    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
-    if (!row) {
+    withMemory(id, (db, row) => {
+      const tags = getTagsForMemory(db, row.id);
+      if (tags.includes("archived")) {
+        db.close();
+        console.log(`Memory ${id} is already archived.`);
+        return;
+      }
+      db.prepare("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, 'archived')").run(row.id);
       db.close();
-      console.log(`No memory found with id ${id}.`);
-      return;
-    }
-    const tags = getTagsForMemory(db, row.id);
-    if (tags.includes("archived")) {
-      db.close();
-      console.log(`Memory ${id} is already archived.`);
-      return;
-    }
-    db.prepare("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, 'archived')").run(row.id);
-    db.close();
-    console.log(`Memory ${id} archived.`);
+      console.log(`Memory ${id} archived.`);
+    });
   });
 
 program
   .command("restore <id>")
   .description("Restore an archived memory")
   .action((id) => {
-    const db = getDb();
-    const row = db.prepare("SELECT id FROM memories WHERE id = ?").get(Number(id));
-    if (!row) {
+    withMemory(id, (db, row) => {
+      const tags = getTagsForMemory(db, row.id);
+      if (!tags.includes("archived")) {
+        db.close();
+        console.log(`Memory ${id} is not archived.`);
+        return;
+      }
+      db.prepare("DELETE FROM memory_tags WHERE memory_id = ? AND tag = 'archived'").run(row.id);
       db.close();
-      console.log(`No memory found with id ${id}.`);
-      return;
-    }
-    const tags = getTagsForMemory(db, row.id);
-    if (!tags.includes("archived")) {
-      db.close();
-      console.log(`Memory ${id} is not archived.`);
-      return;
-    }
-    db.prepare("DELETE FROM memory_tags WHERE memory_id = ? AND tag = 'archived'").run(row.id);
-    db.close();
-    console.log(`Memory ${id} restored.`);
+      console.log(`Memory ${id} restored.`);
+    });
   });
 
 program
@@ -619,18 +587,16 @@ program
       return;
     }
 
-    const taskStatusTags = ["todo", "wip", "done"];
     console.log(`Tasks (${tasks.length} open):`);
     if (tasks.length === 0) {
       console.log("  No open tasks.\n");
     } else {
       for (const row of tasks) {
         const tags = getTagsForMemory(db, row.id);
-        const status = tags.find((t) => taskStatusTags.includes(t)) || "todo";
-        const otherTags = tags.filter((t) => !taskStatusTags.includes(t) && t !== "task");
-        const tagStr = otherTags.length > 0 ? ` [${otherTags.join(", ")}]` : "";
+        const status = tags.find((t) => VALID_STATUSES.includes(t)) || "todo";
+        const otherTags = tags.filter((t) => !VALID_STATUSES.includes(t) && t !== "task");
         const firstLine = row.content.split("\n")[0];
-        console.log(`  [${row.id}] [${status}]${tagStr} ${firstLine}`);
+        console.log(`  [${row.id}] [${status}]${formatTagSuffix(otherTags)} ${firstLine}`);
       }
       console.log();
     }
@@ -638,11 +604,78 @@ program
     console.log("Recent:");
     for (const row of recent) {
       const tags = getTagsForMemory(db, row.id);
-      const tagStr = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
       const firstLine = row.content.split("\n")[0];
-      console.log(`  [${row.id}]${tagStr} ${firstLine}`);
+      console.log(`  [${row.id}]${formatTagSuffix(tags)} ${firstLine}`);
     }
 
+    db.close();
+  });
+
+addFilterOptions(
+  program
+    .command("similar <text>")
+    .description("Find semantically similar memories")
+).action(async (text, options) => {
+    const { tags, from, to, all, limit, tail, offset, json } = parseFilterOptions(options);
+    const queryBuf = await embed(text);
+    const queryVec = new Float32Array(queryBuf.buffer, queryBuf.byteOffset, queryBuf.byteLength / 4);
+    const db = getDb();
+    const query = { joins: [], wheres: ["m.embedding IS NOT NULL"], params: [] };
+    applyFilters(query, { from, to, tags, all });
+    const sql = `SELECT m.id, m.timestamp, m.content, m.embedding FROM memories m
+      ${query.joins.join(" ")}
+      WHERE ${query.wheres.join(" AND ")}`;
+    const rows = db.prepare(sql).all(...query.params);
+    const scored = rows.map((row) => {
+      const vec = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
+      return { id: row.id, timestamp: row.timestamp, content: row.content, similarity: cosineSimilarity(queryVec, vec) };
+    });
+    scored.sort((a, b) => b.similarity - a.similarity);
+    const effectiveOffset = offset || 0;
+    const count = limit || tail || 10;
+    const sliced = tail
+      ? scored.slice(Math.max(0, scored.length - effectiveOffset - count), scored.length - effectiveOffset).reverse()
+      : scored.slice(effectiveOffset, effectiveOffset + count);
+    const total = scored.length;
+    if (json) {
+      console.log(JSON.stringify(sliced.map((r) => ({
+        ...r,
+        tags: getTagsForMemory(db, r.id),
+        similarity: Math.round(r.similarity * 1000) / 1000,
+      }))));
+    } else {
+      for (const r of sliced) {
+        const tags = getTagsForMemory(db, r.id);
+        const sim = Math.round(r.similarity * 1000) / 1000;
+        const lines = r.content.split("\n");
+        const preview = lines.slice(0, 3).join("\n");
+        const ellipsis = lines.length > 3 ? "\n[...]" : "";
+        console.log(`[${r.id}] [${r.timestamp}]${formatTagSuffix(tags)} (${sim})\n${preview}${ellipsis}\n`);
+      }
+      printPagination(sliced.length, total, effectiveOffset);
+    }
+    db.close();
+  });
+
+program
+  .command("embed")
+  .description("Generate embeddings for all memories that lack them")
+  .action(async () => {
+    const db = getDb();
+    const rows = db.prepare("SELECT id, content FROM memories WHERE embedding IS NULL").all();
+    if (rows.length === 0) {
+      console.log("All memories already have embeddings.");
+      db.close();
+      return;
+    }
+    console.log(`Generating embeddings for ${rows.length} memories...`);
+    const update = db.prepare("UPDATE memories SET embedding = ? WHERE id = ?");
+    for (let i = 0; i < rows.length; i++) {
+      const buf = await embed(rows[i].content);
+      update.run(buf, rows[i].id);
+      process.stdout.write(`\r  ${i + 1}/${rows.length}`);
+    }
+    console.log("\nDone.");
     db.close();
   });
 
