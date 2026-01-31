@@ -17,7 +17,7 @@
     "url": "git+https://github.com/fvdsn/smolbrain.git"
   },
   "homepage": "https://github.com/fvdsn/smolbrain",
-  "files": ["index.js", "README.md"],
+  "files": ["index.js", "README.md", "SKILL.md"],
   "dependencies": {
     "better-sqlite3": "^12.6.2",
     "commander": "^14.0.2"

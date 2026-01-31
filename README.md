@@ -61,6 +61,16 @@ smolbrain mark 7 wip
 smolbrain mark 7 done
 ```
 
+### Pagination
+
+```bash
+smolbrain ls --limit 10            # first 10 results
+smolbrain ls --limit 10 --offset 5 # skip 5, then show 10
+smolbrain ls --tail 10             # last 10 results
+```
+
+`--limit`, `--tail`, `--offset`, `--from`, and `--to` work on `ls`, `find`, and `tasks`.
+
 ### Output
 
 All listing commands support `--json` for structured output:
@@ -87,6 +97,17 @@ smolbrain get 42 --json
 | `task [text...]` | Store a task |
 | `tasks [status]` | List tasks |
 | `mark <id> <status>` | Set task status (todo/wip/done) |
+
+## Claude Code skill
+
+A `SKILL.md` is included so Claude Code can use smolbrain automatically. Copy it to your skills directory:
+
+```bash
+mkdir -p ~/.claude/skills/smolbrain
+cp $(npm root -g)/smolbrain/SKILL.md ~/.claude/skills/smolbrain/SKILL.md
+```
+
+Claude will then use smolbrain to store and recall information across sessions.
 
 ## Design
 
