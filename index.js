@@ -104,15 +104,15 @@ function formatMemory(db, row) {
 
 function printMemory(row, tags) {
   const tagSuffix = tags && tags.length > 0 ? ` [${tags.join(", ")}]` : "";
-  console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${row.content}`);
+  console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${row.content}\n`);
 }
 
 function printMemoryPreview(row, tags) {
   const tagSuffix = tags && tags.length > 0 ? ` [${tags.join(", ")}]` : "";
   const lines = row.content.split("\n");
   const preview = lines.slice(0, 3).join("\n");
-  const ellipsis = lines.length > 3 ? "\n..." : "";
-  console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${preview}${ellipsis}`);
+  const ellipsis = lines.length > 3 ? "\n[...]" : "";
+  console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}\n${preview}${ellipsis}\n`);
 }
 
 function queryMemories(db, { joins = [], wheres = ["1=1"], params = [], limit, offset, tail } = {}) {
@@ -243,9 +243,9 @@ function search(text, { from, to, tags, all, limit, tail, offset, json } = {}) {
     const memoryTags = getTagsForMemory(db, row.id);
     const tagSuffix = memoryTags.length > 0 ? ` [${memoryTags.join(", ")}]` : "";
     console.log(`[${row.id}] [${row.timestamp}]${tagSuffix}`);
-    const prefix = sorted[0] > 0 ? "...\n" : "";
-    const suffix = sorted[sorted.length - 1] < lines.length - 1 ? "\n..." : "";
-    console.log(prefix + parts.join("\n...\n") + suffix);
+    const prefix = sorted[0] > 0 ? "[...]\n" : "";
+    const suffix = sorted[sorted.length - 1] < lines.length - 1 ? "\n[...]\n" : "\n";
+    console.log(prefix + parts.join("\n[...]\n") + suffix);
   }
   db.close();
 }
