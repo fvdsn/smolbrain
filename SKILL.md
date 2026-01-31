@@ -96,6 +96,8 @@ smolbrain ls --tail 5 --json
 
 ## Guidelines
 
+- Run `smolbrain status` at the start of each session
+- Save progress frequently: after completing a step, making a decision, or discovering something important, store it as a memory so it survives context loss
 - Search before storing to avoid duplicates
 - Use tags consistently to group related memories
 - Prefer short, factual memories over long narratives
